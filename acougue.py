@@ -130,7 +130,7 @@ CORTES_PARAMETROS = {
     ],
     "DIANTEIRO": [
         "PONTA DE AGULHA (C/ ACEM)", "CRUZ MACHADO", "CUPIM", "PEITO COM OSSO", 
-        "MUSCULO", "PELE DO DIANTEIRO", "OSSO DO DIANTEIRO", "EMBALAGEM"
+        "PEITO S/ OSSO", "MUSCULO", "PELE DO DIANTEIRO", "OSSO DO DIANTEIRO", "EMBALAGEM"
     ],
     "CHUPA MOLHO": [
         "CHUPA MOLHO (C/ FRALDINHA)", "PELE", "EMBALAGEM"
@@ -271,7 +271,8 @@ if "🔪 2. Auditar Desossa" in dict_abas:
                     st.success(f"📎 Evidência anexada: {dados_rec['evidencia_nome']}")
             
             with col_upload:
-                evidencia = st.file_uploader("📸/📄 Anexar Evidência", type=['png', 'jpg', 'jpeg', 'webp', 'bmp', 'pdf'], label_visibility="collapsed", key=f"up_{rec_selecionado}")
+                # Restrito novamente apenas para imagens
+                evidencia = st.file_uploader("📸 Anexar Evidência da Desossa", type=['png', 'jpg', 'jpeg', 'webp', 'bmp'], label_visibility="collapsed", key=f"up_{rec_selecionado}")
                 if evidencia is not None:
                     for r in st.session_state["recebimentos"]:
                         if r["id"] == rec_selecionado:
@@ -486,14 +487,14 @@ if "📊 4. Painel de Acompanhamento" in dict_abas:
 # ------------------------------------------
 if "📂 5. Evidências" in dict_abas:
     with dict_abas["📂 5. Evidências"]:
-        st.header("📂 Gerenciador de Evidências")
-        st.markdown("Visualize ou baixe os documentos e fotos anexados nas Notas Fiscais.")
+        st.header("📂 Galeria de Evidências Fotográficas")
+        st.markdown("Visualize as fotos anexadas às auditorias de Notas Fiscais.")
         st.markdown("---")
         
         recs_com_evidencia = [r for r in st.session_state["recebimentos"] if r.get("evidencia_bytes")]
         
         if not recs_com_evidencia:
-            st.info("Nenhuma evidência foi anexada às Notas Fiscais até o momento.")
+            st.info("Nenhuma imagem foi anexada às Notas Fiscais até o momento.")
         else:
             for r in recs_com_evidencia:
                 data_rec_fmt = datetime.datetime.strptime(r['data'], "%Y-%m-%d").strftime("%d/%m/%Y")
@@ -504,17 +505,15 @@ if "📂 5. Evidências" in dict_abas:
                     with col_info:
                         st.subheader(f"🧾 NF: {r['nf']}")
                         st.write(f"**Fornecedor:** {r['fornecedor']} | **Data:** {data_rec_fmt}")
-                        st.write(f"**Arquivo Anexado:** `{r['evidencia_nome']}`")
+                        st.write(f"**Arquivo:** `{r['evidencia_nome']}`")
                         
-                        # Se for imagem, exibe na tela
+                        # Exibe a imagem na tela, pois a restrição agora é apenas para formatos de imagem
                         if "image" in r["evidencia_tipo"]:
-                            st.image(r["evidencia_bytes"], caption=f"Evidência da NF {r['nf']}", width=400)
-                        elif "pdf" in r["evidencia_tipo"]:
-                            st.info("📄 Arquivo PDF (Utilize o botão ao lado para baixar e visualizar)")
+                            st.image(r["evidencia_bytes"], caption=f"Evidência fotográfica da NF {r['nf']}", width=400)
                             
                     with col_acao:
                         st.download_button(
-                            label="📥 Baixar Arquivo Original",
+                            label="📥 Baixar Imagem",
                             data=r["evidencia_bytes"],
                             file_name=r["evidencia_nome"],
                             mime=r["evidencia_tipo"],
