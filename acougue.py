@@ -321,4 +321,258 @@ if "🔪 2. Auditar Desossa" in dict_abas:
                 if dados_rec.get("evidencia_nome"):
                     st.success(f"📎 Evidência salva na nuvem: {dados_rec['evidencia_nome']}")
             
-            with col_
+            with col_upload:
+                evidencia = st.file_uploader("📸 Anexar Evidência da Desossa", type=['png', 'jpg', 'jpeg', 'webp', 'bmp'], label_visibility="collapsed", key=f"up_{rec_selecionado}")
+                if evidencia is not None:
+                    if dados_rec.get("evidencia_nome") != evidencia.name:
+                        nota_atualizada = dados_rec.copy()
+                        nota_atualizada["evidencia_nome"] = evidencia.name
+                        nota_atualizada["evidencia_bytes"] = evidencia.getvalue()
+                        nota_atualizada["evidencia_tipo"] = evidencia.type
+                        upd_recebimento(rec_selecionado, nota_atualizada)
+                        st.success("Evidência anexada! Vá para a Aba Evidências para consultar.")
+                        st.rerun()
+
+            with col_excluir:
+                if st.button("🗑️ Excluir Nota", type="secondary", use_container_width=True):
+                    del_recebimento(rec_selecionado)
+                    st.rerun()
+            
+            st.markdown("---")
+            
+            for idx, peca in enumerate(dados_rec["pecas"]):
+                tipo_peca = identificar_tipo_peca(peca['nome'])
+                
+                with st.expander(f"🔪 {peca['nome']} | Recebido: {peca['peso_recebido']:.3f} kg", expanded=True):
+                    with st.form(f"form_cortes_{idx}"):
+                        st.markdown("**Responsáveis por esta desossa:**")
+                        col_resp1, col_resp2, col_resp3 = st.columns(3)
+                        data_des = col_resp1.date_input("Data da Desossa", datetime.date.today())
+                        acoug_des = col_resp2.selectbox("Açougueiro", st.session_state["acougueiros"])
+                        prev_des = col_resp3.selectbox("Prevenção (Acompanhou)", st.session_state["prevencao_equipe"])
+                        
+                        st.markdown("---")
+                        valores_cortes = {}
+                        
+                        if tipo_peca and tipo_peca in CORTES_PARAMETROS:
+                            cortes_esperados = CORTES_PARAMETROS[tipo_peca]
+                            for corte in cortes_esperados:
+                                valor_atual = peca.get('detalhes_cortes', {}).get(corte, 0.0)
+                                valores_cortes[corte] = st.number_input(corte, min_value=0.0, format="%.3f", step=0.001, value=float(valor_atual))
+                                
+                            soma_desossa = sum(valores_cortes.values())
+                        else:
+                            st.warning("Peça sem parâmetros. Insira o peso total manual.")
+                            soma_desossa = st.number_input("Peso Total Final (KG)", min_value=0.0, format="%.3f", step=0.001, value=float(peca['peso_desossado']))
+
+                        st.markdown("---")
+                        salvar_desossa = st.form_submit_button("💾 Salvar Auditoria e Sincronizar na Nuvem", type="primary", use_container_width=True)
+                        
+                        if salvar_desossa:
+                            nota_atualizada = dados_rec.copy()
+                            nota_atualizada["pecas"][idx]["detalhes_cortes"] = valores_cortes
+                            nota_atualizada["pecas"][idx]["peso_desossado"] = soma_desossa
+                            nota_atualizada["pecas"][idx]["data_desossa"] = data_des.strftime("%d/%m/%Y")
+                            nota_atualizada["pecas"][idx]["acougueiro_desossa"] = acoug_des
+                            nota_atualizada["pecas"][idx]["prev_desossa"] = prev_des
+                            upd_recebimento(rec_selecionado, nota_atualizada)
+                            st.success("Dados salvos com segurança!")
+                            st.rerun()
+
+                    col_res1, col_res2, col_res3 = st.columns(3)
+                    div = peca['peso_recebido'] - peca['peso_desossado']
+                    
+                    col_res1.metric("Peso Recebido", f"{peca['peso_recebido']:.3f} kg")
+                    col_res2.metric("Total Desossado", f"{peca['peso_desossado']:.3f} kg")
+                    
+                    if peca['peso_desossado'] > 0:
+                        if div > 0: col_res3.metric("Quebra (Falta)", f"{div:.3f} kg", f"-{div:.3f} kg", delta_color="normal")
+                        elif div < 0: col_res3.metric("Sobra", f"{abs(div):.3f} kg", f"+{abs(div):.3f} kg", delta_color="normal")
+                        else: col_res3.metric("Divergência", "0.000 kg", "Exato", delta_color="off")
+
+# ------------------------------------------
+# ABA 4: PAINEL DE ACOMPANHAMENTO E RELATÓRIOS
+# ------------------------------------------
+if "📊 4. Painel de Acompanhamento" in dict_abas:
+    with dict_abas["📊 4. Painel de Acompanhamento"]:
+        notas_pendentes, notas_parciais, notas_concluidas = [], [], []
+        
+        for r in st.session_state["recebimentos"]:
+            total_pecas = len(r["pecas"])
+            pecas_desossadas = sum(1 for p in r["pecas"] if p.get("peso_desossado", 0) > 0)
+            
+            if pecas_desossadas == 0: notas_pendentes.append(r)
+            elif pecas_desossadas == total_pecas: notas_concluidas.append(r)
+            else: notas_parciais.append(r)
+
+        st.header("📋 Status das Notas Fiscais")
+        
+        col_p1, col_p2, col_p3 = st.columns(3)
+        col_p1.metric("🔴 Pendentes (Aguardando Desossa)", len(notas_pendentes))
+        col_p2.metric("🟡 Parcialmente Desossadas", len(notas_parciais))
+        col_p3.metric("🟢 Concluídas (Totalmente Auditadas)", len(notas_concluidas))
+        
+        with st.expander("Ver detalhes dos Status"):
+            c_p1, c_p2, c_p3 = st.columns(3)
+            with c_p1:
+                for n in notas_pendentes: st.write(f"- NF: {n['nf']} ({n['fornecedor']})")
+            with c_p2:
+                for n in notas_parciais: st.write(f"- NF: {n['nf']} ({n['fornecedor']})")
+            with c_p3:
+                for n in notas_concluidas: st.write(f"- NF: {n['nf']} ({n['fornecedor']})")
+
+        st.markdown("---")
+        st.header("📊 Filtro e Exportação de Dados")
+        
+        col_filtro1, col_filtro2 = st.columns(2)
+        data_inicio = col_filtro1.date_input("Data Inicial", datetime.date.today() - datetime.timedelta(days=30))
+        data_fim = col_filtro2.date_input("Data Final", datetime.date.today())
+        
+        linhas_relatorio = []
+        total_recebido_geral = total_desossado_geral = 0.0
+        
+        for r in st.session_state["recebimentos"]:
+            data_rec_obj = datetime.datetime.strptime(r["data"], "%Y-%m-%d").date()
+            if data_inicio <= data_rec_obj <= data_fim:
+                for p in r["pecas"]:
+                    div = p["peso_recebido"] - p["peso_desossado"]
+                    perc = (div / p["peso_recebido"]) * 100 if p["peso_recebido"] > 0 else 0
+                    
+                    if p["peso_desossado"] > 0:
+                        total_recebido_geral += p["peso_recebido"]
+                        total_desossado_geral += p["peso_desossado"]
+                    
+                    linhas_relatorio.append({
+                        "NF": r["nf"], "Fornecedor": r["fornecedor"],
+                        "Data Recebimento": data_rec_obj.strftime("%d/%m/%Y"), "Peça": p["nome"],
+                        "Data Desossa": p.get("data_desossa", "Pendente"),
+                        "Açougueiro": p.get("acougueiro_desossa", "Pendente"),
+                        "Prevenção (Auditor)": p.get("prev_desossa", "Pendente"),
+                        "Peso Recebido (KG)": p["peso_recebido"], "Peso Desossado (KG)": p["peso_desossado"],
+                        "Divergência (KG)": round(div, 3), "Quebra (%)": round(perc, 3),
+                        "Evidência": r.get("evidencia_nome", "Não anexada")
+                    })
+                
+        if not linhas_relatorio:
+            st.info("Nenhum dado registrado para o período selecionado.")
+        else:
+            quebra_geral = total_recebido_geral - total_desossado_geral
+            perc_geral = (quebra_geral / total_recebido_geral * 100) if total_recebido_geral > 0 else 0
+            
+            col_met1, col_met2, col_met3 = st.columns(3)
+            col_met1.metric("Volume Total Auditado (Período)", f"{total_recebido_geral:.3f} kg")
+            col_met2.metric("Rendimento Total (Período)", f"{total_desossado_geral:.3f} kg")
+            col_met3.metric("Quebra Global (Período)", f"{quebra_geral:.3f} kg", f"{perc_geral:.3f}%", delta_color="inverse")
+            
+            st.markdown("---")
+            df_relatorio = pd.DataFrame(linhas_relatorio)
+            st.dataframe(df_relatorio.style.format({
+                "Peso Recebido (KG)": "{:.3f}", "Peso Desossado (KG)": "{:.3f}", 
+                "Divergência (KG)": "{:.3f}", "Quebra (%)": "{:.3f}"
+            }), use_container_width=True)
+            
+            buffer = BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                df_relatorio.to_excel(writer, index=False, sheet_name='Historico_Desossa')
+            
+            st.download_button(
+                label="📥 Baixar Histórico Filtrado (Excel .xlsx)",
+                data=buffer.getvalue(), file_name="Historico_Desossa.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary"
+            )
+            
+            st.markdown("---")
+            st.subheader("📲 Compartilhar no WhatsApp")
+            tipo_wpp = st.radio("Selecione o que deseja copiar:", ["Resumo do Período Filtrado", "Detalhes de uma Nota Específica (NF)"], horizontal=True)
+            texto_wpp = ""
+            
+            if tipo_wpp == "Resumo do Período Filtrado":
+                texto_wpp += f"🏪 *PREVENÇÃO DE PERDAS - LOJA 16-7*\n📊 *RESUMO DO AÇOUGUE*\n"
+                texto_wpp += f"📅 Período: {data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}\n\n"
+                texto_wpp += f"🥩 *Total Recebido/Auditado:* {total_recebido_geral:.3f} kg\n"
+                texto_wpp += f"🔪 *Total Desossado/Rendimento:* {total_desossado_geral:.3f} kg\n"
+                if quebra_geral > 0: texto_wpp += f"🔻 *Quebra Global:* {quebra_geral:.3f} kg ({perc_geral:.3f}%)\n"
+                elif quebra_geral < 0: texto_wpp += f"🔺 *Sobra Global:* {abs(quebra_geral):.3f} kg ({abs(perc_geral):.3f}%)\n"
+                else: texto_wpp += f"✅ *Divergência Global:* ZERO\n"
+                botao_copiar_whatsapp(texto_wpp)
+                
+            elif tipo_wpp == "Detalhes de uma Nota Específica (NF)":
+                nfs_disponiveis = df_relatorio['NF'].unique()
+                if len(nfs_disponiveis) > 0:
+                    nf_selecionada = st.selectbox("Selecione a Nota Fiscal", nfs_disponiveis)
+                    dados_rec = next((r for r in st.session_state["recebimentos"] if r["nf"] == nf_selecionada), None)
+                    if dados_rec:
+                        data_rec_fmt = datetime.datetime.strptime(dados_rec['data'], "%Y-%m-%d").strftime("%d/%m/%Y")
+                        texto_wpp += f"🏪 *PREVENÇÃO DE PERDAS - LOJA 16-7*\n🧾 *RECEBIMENTO DE AÇOUGUE - NF: {dados_rec['nf']}*\n"
+                        texto_wpp += f"📅 *Data Rec.:* {data_rec_fmt}\n🏢 *Fornecedor:* {dados_rec['fornecedor']}\n"
+                        texto_wpp += f"👨‍🍳 *Líder:* {dados_rec['lider']} | 🕵️‍♂️ *Prev:* {dados_rec['prev_recebeu']}\n"
+                        if dados_rec.get("evidencia_nome"): texto_wpp += f"📎 *Evidência anexada no sistema*\n\n"
+                        else: texto_wpp += f"\n"
+                        texto_wpp += "🥩 *DETALHAMENTO DE DESOSSA:*\n"
+                        for peca in dados_rec['pecas']:
+                            texto_wpp += f"🔸 *{peca['nome']}* (Rec: {peca['peso_recebido']:.3f}kg)\n"
+                            if peca['peso_desossado'] > 0:
+                                texto_wpp += f"  🧑‍🔧 Desossado por: {peca.get('acougueiro_desossa', 'N/A')}\n"
+                                texto_wpp += f"  👀 Acompanhado por: {peca.get('prev_desossa', 'N/A')}\n"
+                                div = peca['peso_recebido'] - peca['peso_desossado']
+                                porc = (div / peca['peso_recebido']) * 100 if peca['peso_recebido'] > 0 else 0
+                                texto_wpp += f"  👉 Rendimento Final: {peca['peso_desossado']:.3f}kg\n"
+                                if div > 0: texto_wpp += f"  🔻 *QUEBRA:* {div:.3f}kg ({porc:.3f}%)\n\n"
+                                elif div < 0: texto_wpp += f"  🔺 *SOBRA:* {abs(div):.3f}kg ({abs(porc):.3f}%)\n\n"
+                                else: texto_wpp += f"  ✅ *DIVERGÊNCIA:* ZERO\n\n"
+                            else:
+                                texto_wpp += f"  ⏳ *Status:* Pendente de desossa\n\n"
+                        botao_copiar_whatsapp(texto_wpp)
+
+# ------------------------------------------
+# ABA 5: VISUALIZADOR DE EVIDÊNCIAS
+# ------------------------------------------
+if "📂 5. Evidências" in dict_abas:
+    with dict_abas["📂 5. Evidências"]:
+        st.header("📂 Galeria de Evidências Fotográficas")
+        st.markdown("Filtre e visualize as fotos sincronizadas com o banco de dados.")
+        
+        col_filtro_ev1, col_filtro_ev2, col_filtro_ev3 = st.columns(3)
+        data_inicio_ev = col_filtro_ev1.date_input("Data Inicial", datetime.date.today() - datetime.timedelta(days=30), key="ev_d1")
+        data_fim_ev = col_filtro_ev2.date_input("Data Final", datetime.date.today(), key="ev_d2")
+        nf_filtro_ev = col_filtro_ev3.text_input("Filtrar por NF (Opcional)", key="ev_nf").strip()
+        
+        st.markdown("---")
+        
+        recs_com_evidencia = []
+        for r in st.session_state["recebimentos"]:
+            if r.get("evidencia_bytes"):
+                data_rec_obj = datetime.datetime.strptime(r["data"], "%Y-%m-%d").date()
+                if data_inicio_ev <= data_rec_obj <= data_fim_ev:
+                    if not nf_filtro_ev or nf_filtro_ev in r["nf"]:
+                        recs_com_evidencia.append(r)
+        
+        if not recs_com_evidencia:
+            st.info("Nenhuma imagem encontrada para os filtros selecionados.")
+        else:
+            for r in recs_com_evidencia:
+                data_rec_fmt = datetime.datetime.strptime(r['data'], "%Y-%m-%d").strftime("%d/%m/%Y")
+                
+                with st.container(border=True):
+                    col_img, col_info, col_acao = st.columns([1.5, 3, 1])
+                    
+                    with col_img:
+                        if "image" in r["evidencia_tipo"]:
+                            st.image(r["evidencia_bytes"], width=150)
+                            
+                    with col_info:
+                        st.subheader(f"🧾 NF: {r['nf']}")
+                        st.write(f"**Fornecedor:** {r['fornecedor']} | **Data:** {data_rec_fmt}")
+                        st.write(f"**Arquivo:** `{r['evidencia_nome']}`")
+                            
+                    with col_acao:
+                        st.download_button(
+                            label="📥 Baixar Imagem",
+                            data=r["evidencia_bytes"],
+                            file_name=r["evidencia_nome"],
+                            mime=r["evidencia_tipo"],
+                            key=f"dl_btn_ev_{r['id']}",
+                            use_container_width=True,
+                            type="primary"
+                        )
