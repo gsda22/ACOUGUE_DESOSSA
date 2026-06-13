@@ -4,6 +4,9 @@ import pandas as pd
 from io import BytesIO
 import base64
 import streamlit.components.v1 as components
+import json
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 # ==========================================
 # CONFIGURAÇÃO DE PÁGINA E ESTILO
@@ -15,17 +18,96 @@ st.markdown("""
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     .stMetricDelta > div { font-size: 1.2rem !important; }
-    
     input::-webkit-outer-spin-button,
-    input::-webkit-inner-spin-button {
-        -webkit-appearance: none;
-        margin: 0;
-    }
-    input[type=number] {
-        -moz-appearance: textfield;
-    }
+    input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    input[type=number] { -moz-appearance: textfield; }
     </style>
 """, unsafe_allow_html=True)
+
+# ==========================================
+# CONEXÃO COM O BANCO DE DADOS (FIREBASE)
+# ==========================================
+@st.cache_resource
+def init_firebase():
+    if not firebase_admin._apps:
+        try:
+            # Puxa as credenciais do painel de Secrets do Streamlit Cloud
+            firebase_secrets = dict(st.secrets["firebase"])
+            cred = credentials.Certificate(firebase_secrets)
+            firebase_admin.initialize_app(cred)
+        except Exception as e:
+            return None # Retorna None se as credenciais não estiverem configuradas ainda
+    return firestore.client()
+
+db = init_firebase()
+
+# ==========================================
+# SINCRONIZAÇÃO E PERSISTÊNCIA (CRUD)
+# ==========================================
+def carregar_dados_iniciais():
+    defaults = {
+        "fornecedores": ["Friboi", "Seara", "Masterboi"],
+        "pecas_cadastro": ["TRASEIRO", "DIANTEIRO", "CHUPA MOLHO"],
+        "lideres": ["João (Líder)", "Carlos (Líder)"],
+        "acougueiros": ["Marcos", "José"],
+        "prevencao_equipe": ["Fiscal Lucas", "Fiscal Maria"]
+    }
+    
+    if db is not None:
+        # Carrega configurações salvas na nuvem
+        doc_ref = db.collection('configs').document('cadastros')
+        doc = doc_ref.get()
+        if doc.exists:
+            dados = doc.to_dict()
+            for k in defaults.keys(): st.session_state[k] = dados.get(k, defaults[k])
+        else:
+            doc_ref.set(defaults)
+            for k in defaults.keys(): st.session_state[k] = defaults[k]
+
+        # Carrega todo o histórico de notas
+        recs = []
+        for doc in db.collection('recebimentos').stream():
+            recs.append(doc.to_dict())
+        st.session_state["recebimentos"] = recs
+    else:
+        # Fallback para memória temporária se não houver Firebase
+        for k in defaults.keys():
+            if k not in st.session_state: st.session_state[k] = defaults[k]
+        if "recebimentos" not in st.session_state: st.session_state["recebimentos"] = []
+
+def add_config(key, item):
+    st.session_state[key].append(item)
+    if db is not None: db.collection('configs').document('cadastros').update({key: st.session_state[key]})
+
+def rm_config(key, item):
+    st.session_state[key].remove(item)
+    if db is not None: db.collection('configs').document('cadastros').update({key: st.session_state[key]})
+
+def add_recebimento(novo_registro):
+    st.session_state["recebimentos"].append(novo_registro)
+    if db is not None: db.collection('recebimentos').document(novo_registro['id']).set(novo_registro)
+
+def del_recebimento(id_rec):
+    st.session_state["recebimentos"] = [r for r in st.session_state["recebimentos"] if r["id"] != id_rec]
+    if db is not None: db.collection('recebimentos').document(id_rec).delete()
+
+def upd_recebimento(id_rec, nota_atualizada):
+    for i, r in enumerate(st.session_state["recebimentos"]):
+        if r["id"] == id_rec:
+            st.session_state["recebimentos"][i] = nota_atualizada
+            break
+    if db is not None: db.collection('recebimentos').document(id_rec).set(nota_atualizada)
+
+# INICIALIZAÇÃO DE ESTADOS TEMPORÁRIOS
+if "logado" not in st.session_state:
+    st.session_state["logado"] = False
+    st.session_state["usuario_atual"] = None
+    st.session_state["perfil_atual"] = None
+if "pecas_temp" not in st.session_state:
+    st.session_state["pecas_temp"] = []
+if "dados_carregados" not in st.session_state:
+    carregar_dados_iniciais()
+    st.session_state["dados_carregados"] = True
 
 # ==========================================
 # BANCO DE USUÁRIOS E PERMISSÕES
@@ -41,33 +123,6 @@ PERMISSOES_ABAS = {
     "PREVENCAO": ["📥 1. Lançar Recebimento", "🔪 2. Auditar Desossa", "📊 4. Painel de Acompanhamento", "📂 5. Evidências"],
     "OPERACAO": ["📥 1. Lançar Recebimento", "🔪 2. Auditar Desossa"]
 }
-
-# ==========================================
-# BANCO DE DADOS (SESSION STATE)
-# ==========================================
-def init_session_state():
-    if "logado" not in st.session_state:
-        st.session_state["logado"] = False
-        st.session_state["usuario_atual"] = None
-        st.session_state["perfil_atual"] = None
-
-    if "fornecedores" not in st.session_state:
-        st.session_state["fornecedores"] = ["Friboi", "Seara", "Masterboi"]
-    if "pecas_cadastro" not in st.session_state:
-        st.session_state["pecas_cadastro"] = ["TRASEIRO", "DIANTEIRO", "CHUPA MOLHO"]
-    if "lideres" not in st.session_state:
-        st.session_state["lideres"] = ["João (Líder)", "Carlos (Líder)"]
-    if "acougueiros" not in st.session_state:
-        st.session_state["acougueiros"] = ["Marcos", "José"]
-    if "prevencao_equipe" not in st.session_state:
-        st.session_state["prevencao_equipe"] = ["Fiscal Lucas", "Fiscal Maria"]
-    
-    if "pecas_temp" not in st.session_state:
-        st.session_state["pecas_temp"] = []
-    if "recebimentos" not in st.session_state:
-        st.session_state["recebimentos"] = []
-
-init_session_state()
 
 # ==========================================
 # TELA DE LOGIN (BLOQUEIO DO SISTEMA)
@@ -93,7 +148,6 @@ if not st.session_state["logado"]:
                     st.rerun()
                 else:
                     st.error("Usuário ou senha incorretos.")
-                    
     st.stop()
 
 # ==========================================
@@ -132,9 +186,7 @@ CORTES_PARAMETROS = {
         "PONTA DE AGULHA (C/ ACEM)", "CRUZ MACHADO", "CUPIM", "PEITO COM OSSO", 
         "PEITO S/ OSSO", "MUSCULO", "PELE DO DIANTEIRO", "OSSO DO DIANTEIRO", "EMBALAGEM"
     ],
-    "CHUPA MOLHO": [
-        "CHUPA MOLHO (C/ FRALDINHA)", "PELE", "EMBALAGEM"
-    ]
+    "CHUPA MOLHO": ["CHUPA MOLHO (C/ FRALDINHA)", "PELE", "EMBALAGEM"]
 }
 
 def identificar_tipo_peca(nome_peca):
@@ -145,8 +197,11 @@ def identificar_tipo_peca(nome_peca):
     return None
 
 # ==========================================
-# CABEÇALHO COM LOGO E SAÍDA
+# CABEÇALHO E ALERTA DE BANCO DE DADOS
 # ==========================================
+if db is None:
+    st.error("⚠️ **MODO OFFLINE:** O banco de dados Firebase não está conectado. As informações serão apagadas ao atualizar a página. Configure as chaves no 'Secrets' do Streamlit Cloud.")
+
 col_logo, col_titulo, col_logout = st.columns([1, 4, 1])
 with col_logo:
     st.image("https://www.novomixsupermercados.com.br/wp-content/themes/novo-mix/img/logo.png", use_container_width=True)
@@ -180,7 +235,7 @@ if "⚙️ 3. Cadastros" in dict_abas:
             st.info(titulo)
             novo_item = st.text_input(f"Novo {titulo}", key=f"add_{session_key}")
             if st.button(f"➕ Add", key=f"btn_add_{session_key}", use_container_width=True) and novo_item:
-                st.session_state[session_key].append(novo_item)
+                add_config(session_key, novo_item)
                 st.rerun()
                 
             st.dataframe(st.session_state[session_key], hide_index=True, use_container_width=True)
@@ -188,7 +243,7 @@ if "⚙️ 3. Cadastros" in dict_abas:
             if len(st.session_state[session_key]) > 0:
                 item_remover = st.selectbox("Remover item", st.session_state[session_key], key=f"sel_rm_{session_key}")
                 if st.button("🗑️ Excluir", key=f"btn_rm_{session_key}", use_container_width=True):
-                    st.session_state[session_key].remove(item_remover)
+                    rm_config(session_key, item_remover)
                     st.rerun()
 
         col1, col2, col3, col4, col5 = st.columns(5)
@@ -245,9 +300,9 @@ if "📥 1. Lançar Recebimento" in dict_abas:
                             "data": data_rec.strftime("%Y-%m-%d"), "pecas": list(st.session_state["pecas_temp"]),
                             "evidencia_nome": None, "evidencia_bytes": None, "evidencia_tipo": None
                         }
-                        st.session_state["recebimentos"].append(novo_registro)
+                        add_recebimento(novo_registro)
                         st.session_state["pecas_temp"] = []
-                        st.success("Nota gravada! Vá para a aba de Desossa.")
+                        st.success("Nota gravada no banco de dados com sucesso! Vá para a aba de Desossa.")
                         st.rerun()
 
 # ------------------------------------------
@@ -256,7 +311,7 @@ if "📥 1. Lançar Recebimento" in dict_abas:
 if "🔪 2. Auditar Desossa" in dict_abas:
     with dict_abas["🔪 2. Auditar Desossa"]:
         if not st.session_state["recebimentos"]:
-            st.info("Nenhuma Nota Fiscal cadastrada.")
+            st.info("Nenhuma Nota Fiscal cadastrada ou carregada do banco de dados.")
         else:
             opcoes_rec = {r["id"]: r for r in st.session_state["recebimentos"]}
             rec_selecionado = st.selectbox("🔍 Selecione a Nota para Auditar", list(opcoes_rec.keys()), format_func=lambda x: f"NF: {opcoes_rec[x]['nf']} | {opcoes_rec[x]['fornecedor']}")
@@ -268,22 +323,22 @@ if "🔪 2. Auditar Desossa" in dict_abas:
             with col_cabecalho:
                 st.write(f"**Data Recebimento:** {data_exibicao} | **Prev. Recebimento:** {dados_rec['prev_recebeu']}")
                 if dados_rec.get("evidencia_nome"):
-                    st.success(f"📎 Evidência anexada: {dados_rec['evidencia_nome']}")
+                    st.success(f"📎 Evidência salva na nuvem: {dados_rec['evidencia_nome']}")
             
             with col_upload:
-                # Restrito novamente apenas para imagens
                 evidencia = st.file_uploader("📸 Anexar Evidência da Desossa", type=['png', 'jpg', 'jpeg', 'webp', 'bmp'], label_visibility="collapsed", key=f"up_{rec_selecionado}")
                 if evidencia is not None:
-                    for r in st.session_state["recebimentos"]:
-                        if r["id"] == rec_selecionado:
-                            r["evidencia_nome"] = evidencia.name
-                            r["evidencia_bytes"] = evidencia.getvalue()
-                            r["evidencia_tipo"] = evidencia.type
-                            st.rerun()
+                    nota_atualizada = dados_rec.copy()
+                    nota_atualizada["evidencia_nome"] = evidencia.name
+                    nota_atualizada["evidencia_bytes"] = evidencia.getvalue()
+                    nota_atualizada["evidencia_tipo"] = evidencia.type
+                    upd_recebimento(rec_selecionado, nota_atualizada)
+                    st.success("Evidência sincronizada com o banco de dados!")
+                    st.rerun()
 
             with col_excluir:
                 if st.button("🗑️ Excluir Nota", type="secondary", use_container_width=True):
-                    st.session_state["recebimentos"] = [r for r in st.session_state["recebimentos"] if r["id"] != rec_selecionado]
+                    del_recebimento(rec_selecionado)
                     st.rerun()
             
             st.markdown("---")
@@ -317,16 +372,17 @@ if "🔪 2. Auditar Desossa" in dict_abas:
                             soma_desossa = st.number_input("Peso Total Final (KG)", min_value=0.0, format="%.3f", step=0.001, value=float(peca['peso_desossado']))
 
                         st.markdown("---")
-                        salvar_desossa = st.form_submit_button("💾 Salvar Auditoria desta Peça", type="primary", use_container_width=True)
+                        salvar_desossa = st.form_submit_button("💾 Salvar Auditoria e Sincronizar na Nuvem", type="primary", use_container_width=True)
                         
                         if salvar_desossa:
-                            for r in st.session_state["recebimentos"]:
-                                if r["id"] == rec_selecionado:
-                                    r["pecas"][idx]["detalhes_cortes"] = valores_cortes
-                                    r["pecas"][idx]["peso_desossado"] = soma_desossa
-                                    r["pecas"][idx]["data_desossa"] = data_des.strftime("%d/%m/%Y")
-                                    r["pecas"][idx]["acougueiro_desossa"] = acoug_des
-                                    r["pecas"][idx]["prev_desossa"] = prev_des
+                            nota_atualizada = dados_rec.copy()
+                            nota_atualizada["pecas"][idx]["detalhes_cortes"] = valores_cortes
+                            nota_atualizada["pecas"][idx]["peso_desossado"] = soma_desossa
+                            nota_atualizada["pecas"][idx]["data_desossa"] = data_des.strftime("%d/%m/%Y")
+                            nota_atualizada["pecas"][idx]["acougueiro_desossa"] = acoug_des
+                            nota_atualizada["pecas"][idx]["prev_desossa"] = prev_des
+                            upd_recebimento(rec_selecionado, nota_atualizada)
+                            st.success("Dados salvos com segurança!")
                             st.rerun()
 
                     col_res1, col_res2, col_res3 = st.columns(3)
@@ -442,11 +498,9 @@ if "📊 4. Painel de Acompanhamento" in dict_abas:
                 texto_wpp += f"📅 Período: {data_inicio.strftime('%d/%m/%Y')} a {data_fim.strftime('%d/%m/%Y')}\n\n"
                 texto_wpp += f"🥩 *Total Recebido/Auditado:* {total_recebido_geral:.3f} kg\n"
                 texto_wpp += f"🔪 *Total Desossado/Rendimento:* {total_desossado_geral:.3f} kg\n"
-                
                 if quebra_geral > 0: texto_wpp += f"🔻 *Quebra Global:* {quebra_geral:.3f} kg ({perc_geral:.3f}%)\n"
                 elif quebra_geral < 0: texto_wpp += f"🔺 *Sobra Global:* {abs(quebra_geral):.3f} kg ({abs(perc_geral):.3f}%)\n"
                 else: texto_wpp += f"✅ *Divergência Global:* ZERO\n"
-                
                 botao_copiar_whatsapp(texto_wpp)
                 
             elif tipo_wpp == "Detalhes de uma Nota Específica (NF)":
@@ -454,17 +508,13 @@ if "📊 4. Painel de Acompanhamento" in dict_abas:
                 if len(nfs_disponiveis) > 0:
                     nf_selecionada = st.selectbox("Selecione a Nota Fiscal", nfs_disponiveis)
                     dados_rec = next((r for r in st.session_state["recebimentos"] if r["nf"] == nf_selecionada), None)
-                    
                     if dados_rec:
                         data_rec_fmt = datetime.datetime.strptime(dados_rec['data'], "%Y-%m-%d").strftime("%d/%m/%Y")
                         texto_wpp += f"🏪 *PREVENÇÃO DE PERDAS - LOJA 16-7*\n🧾 *RECEBIMENTO DE AÇOUGUE - NF: {dados_rec['nf']}*\n"
                         texto_wpp += f"📅 *Data Rec.:* {data_rec_fmt}\n🏢 *Fornecedor:* {dados_rec['fornecedor']}\n"
                         texto_wpp += f"👨‍🍳 *Líder:* {dados_rec['lider']} | 🕵️‍♂️ *Prev:* {dados_rec['prev_recebeu']}\n"
-                        if dados_rec.get("evidencia_nome"):
-                            texto_wpp += f"📎 *Evidência anexada no sistema*\n\n"
-                        else:
-                            texto_wpp += f"\n"
-                            
+                        if dados_rec.get("evidencia_nome"): texto_wpp += f"📎 *Evidência anexada no sistema*\n\n"
+                        else: texto_wpp += f"\n"
                         texto_wpp += "🥩 *DETALHAMENTO DE DESOSSA:*\n"
                         for peca in dados_rec['pecas']:
                             texto_wpp += f"🔸 *{peca['nome']}* (Rec: {peca['peso_recebido']:.3f}kg)\n"
@@ -479,7 +529,6 @@ if "📊 4. Painel de Acompanhamento" in dict_abas:
                                 else: texto_wpp += f"  ✅ *DIVERGÊNCIA:* ZERO\n\n"
                             else:
                                 texto_wpp += f"  ⏳ *Status:* Pendente de desossa\n\n"
-                                
                         botao_copiar_whatsapp(texto_wpp)
 
 # ------------------------------------------
@@ -488,7 +537,7 @@ if "📊 4. Painel de Acompanhamento" in dict_abas:
 if "📂 5. Evidências" in dict_abas:
     with dict_abas["📂 5. Evidências"]:
         st.header("📂 Galeria de Evidências Fotográficas")
-        st.markdown("Visualize as fotos anexadas às auditorias de Notas Fiscais.")
+        st.markdown("Visualize as fotos sincronizadas com o banco de dados.")
         st.markdown("---")
         
         recs_com_evidencia = [r for r in st.session_state["recebimentos"] if r.get("evidencia_bytes")]
@@ -501,16 +550,12 @@ if "📂 5. Evidências" in dict_abas:
                 
                 with st.container(border=True):
                     col_info, col_acao = st.columns([3, 1])
-                    
                     with col_info:
                         st.subheader(f"🧾 NF: {r['nf']}")
                         st.write(f"**Fornecedor:** {r['fornecedor']} | **Data:** {data_rec_fmt}")
                         st.write(f"**Arquivo:** `{r['evidencia_nome']}`")
-                        
-                        # Exibe a imagem na tela, pois a restrição agora é apenas para formatos de imagem
                         if "image" in r["evidencia_tipo"]:
                             st.image(r["evidencia_bytes"], caption=f"Evidência fotográfica da NF {r['nf']}", width=400)
-                            
                     with col_acao:
                         st.download_button(
                             label="📥 Baixar Imagem",
